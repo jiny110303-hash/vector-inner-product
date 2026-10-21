@@ -1,0 +1,1076 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>라이다 내적 판별기</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* 레이아웃: 왼쪽에 센서 화면(태블릿 가로에서 고정), 오른쪽에 계산 과정, 알고리즘 설계, 결과, 탐구 질문 */
+:root{
+  --bg:#EEF2F5; --surface:#FFFFFF; --surface-2:#F4F7FA; --ink:#12202C; --muted:#586B7B;
+  --line:#D6DEE5; --line-strong:#B4C2CE;
+  --accent:#2563D8; --accent-ink:#FFFFFF; --accent-soft:#E2EBFC;
+  --danger:#B8281E; --danger-bg:#FCE4E1;
+  --caution:#7D5200; --caution-bg:#FFEFC8;
+  --side:#0A6A5E; --side-bg:#D6F0EB;
+  --rear:#41546A; --rear-bg:#E2E8EF;
+  --ok:#17703F; --ok-bg:#DAF2E4; --bad:#B3261E;
+  --font-body:"IBM Plex Sans KR", system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B121A; --surface:#121C27; --surface-2:#182432; --ink:#E6EDF3; --muted:#9AABBA;
+    --line:#243545; --line-strong:#38505F;
+    --accent:#6EA3FF; --accent-ink:#0B121A; --accent-soft:#1A2B47;
+    --danger:#FF8F85; --danger-bg:#3C1C1A;
+    --caution:#F7C768; --caution-bg:#3A2D10;
+    --side:#6FD6C7; --side-bg:#12332E;
+    --rear:#B0BFCF; --rear-bg:#243241;
+    --ok:#6FDB9D; --ok-bg:#12331F; --bad:#FF8F85;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0B121A; --surface:#121C27; --surface-2:#182432; --ink:#E6EDF3; --muted:#9AABBA;
+  --line:#243545; --line-strong:#38505F;
+  --accent:#6EA3FF; --accent-ink:#0B121A; --accent-soft:#1A2B47;
+  --danger:#FF8F85; --danger-bg:#3C1C1A;
+  --caution:#F7C768; --caution-bg:#3A2D10;
+  --side:#6FD6C7; --side-bg:#12332E;
+  --rear:#B0BFCF; --rear-bg:#243241;
+  --ok:#6FDB9D; --ok-bg:#12331F; --bad:#FF8F85;
+  color-scheme: dark;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:400 16px/1.55 var(--font-body);
+  padding-block:12px 32px;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+}
+button{font-family:inherit}
+:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+
+.app{max-width:1240px; margin:0 auto}
+.top{margin-bottom:14px}
+h1{margin:0; font-size:clamp(22px,3.2vw,28px); line-height:1.25; font-weight:700; letter-spacing:-.01em; text-wrap:balance}
+.lede{margin:4px 0 0; color:var(--muted); font-size:15px; max-width:62ch}
+
+.layout{display:grid; gap:16px}
+.stage-col{display:flex; flex-direction:column; gap:10px; min-width:0}
+.panel-col{display:flex; flex-direction:column; gap:16px; min-width:0}
+@media (min-width:900px){
+  .layout{grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:20px; align-items:start}
+  .stage-col{position:sticky; top:8px}
+}
+
+/* 상황 선택 */
+.presets{display:flex; gap:8px; overflow-x:auto; padding-bottom:2px; scrollbar-width:none}
+.presets::-webkit-scrollbar{display:none}
+.chip{
+  flex:none; min-height:44px; padding:0 16px; border-radius:22px;
+  border:1px solid var(--line-strong); background:var(--surface); color:var(--ink);
+  font-size:14px; font-weight:600; white-space:nowrap; cursor:pointer;
+}
+.chip[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+
+/* 센서 화면 */
+.stage{
+  position:relative; width:100%; aspect-ratio:1/1; border-radius:14px; overflow:hidden;
+  background:#0C1620; border:1px solid var(--line-strong);
+  touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+}
+.stage canvas{position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none}
+.legend{
+  position:absolute; left:8px; bottom:8px; display:flex; gap:4px 12px; flex-wrap:wrap;
+  padding:6px 10px; border-radius:8px; background:rgba(12,22,32,.78); color:#DCE6EE;
+  font-size:12px; pointer-events:none;
+}
+.legend i{display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:-1px}
+.note{margin:0; font-size:14px; color:var(--muted); min-height:3em}
+
+.ctrl{display:flex; flex-direction:column; gap:4px}
+.slider-row label{display:flex; justify-content:space-between; gap:8px; align-items:baseline; font-weight:600; font-size:14px; flex-wrap:wrap}
+.slider-row .mono{font-family:var(--font-mono); font-weight:500; color:var(--muted); font-size:13px}
+.slider-row .hintline{font-size:12px; color:var(--muted); margin:0}
+input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:44px; background:transparent; margin:0; touch-action:pan-y}
+input[type=range]::-webkit-slider-runnable-track{height:6px; border-radius:3px; background:var(--line-strong)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:30px; height:30px; margin-top:-12px; border-radius:50%; background:var(--accent); border:4px solid var(--surface); box-shadow:0 0 0 1px var(--accent)}
+input[type=range]::-moz-range-track{height:6px; border-radius:3px; background:var(--line-strong)}
+input[type=range]::-moz-range-thumb{width:22px; height:22px; border-radius:50%; background:var(--accent); border:4px solid var(--surface); box-shadow:0 0 0 1px var(--accent)}
+
+.btnrow{display:flex; gap:8px; flex-wrap:wrap}
+.btn,.toggle{
+  min-height:46px; padding:0 16px; border-radius:10px; border:1px solid var(--line-strong);
+  background:var(--surface); color:var(--ink); font-size:15px; font-weight:600; cursor:pointer;
+}
+.btn:disabled{opacity:.45; cursor:default}
+.toggle{display:inline-flex; align-items:center; gap:8px}
+.toggle input{width:20px; height:20px; accent-color:var(--accent)}
+.toggle:has(input:checked){border-color:var(--accent); background:var(--accent-soft)}
+
+/* 카드 */
+.card{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:16px; min-width:0}
+.card h2{margin:0 0 10px; font-size:18px; line-height:1.3; font-weight:700}
+.card-head{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px}
+.card-head h2{margin:0}
+.sub{color:var(--muted); font-size:14px; margin:0 0 10px}
+
+/* 벡터 표기 */
+.v{position:relative; display:inline-block; font-style:italic; font-weight:600}
+.v::before{content:"→"; position:absolute; top:-.72em; left:50%; transform:translateX(-50%); font-size:.62em; font-style:normal; font-weight:400}
+
+/* 계산 과정 */
+.steps{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:12px}
+.steps h3{margin:0 0 4px; font-size:14px; font-weight:700; color:var(--muted)}
+.eq{font-family:var(--font-mono); font-size:14.5px; background:var(--surface-2); border-radius:8px; padding:8px 10px; overflow-x:auto; white-space:nowrap; font-variant-numeric:tabular-nums}
+.eq + .eq{margin-top:4px}
+.eq b{font-weight:600}
+.eq .hl{color:var(--accent); font-weight:600}
+.expl{margin:6px 0 0; font-size:14px; color:var(--muted)}
+.verdict{display:flex; flex-direction:column; gap:6px; align-items:flex-start}
+
+.pill{display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; font-weight:700; font-size:13px; white-space:nowrap}
+.pill::before{content:""; width:8px; height:8px; border-radius:50%; background:currentColor}
+.c-danger{color:var(--danger); background:var(--danger-bg)}
+.c-caution{color:var(--caution); background:var(--caution-bg)}
+.c-side{color:var(--side); background:var(--side-bg)}
+.c-rear{color:var(--rear); background:var(--rear-bg)}
+.pill.big{font-size:16px; padding:4px 14px}
+.sel-badge{font-weight:700; font-size:14px; color:var(--accent)}
+
+/* 알고리즘 설계 */
+.seg{display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line-strong); border-radius:10px; overflow:hidden; margin-bottom:6px}
+.seg button{min-height:48px; border:0; background:var(--surface); color:var(--ink); font-size:15px; font-weight:600; cursor:pointer}
+.seg button + button{border-left:1px solid var(--line-strong)}
+.seg button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink)}
+.th-row label{display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; font-weight:600; font-size:14px}
+.th-row .mono{font-family:var(--font-mono); font-weight:500; font-size:13px; color:var(--muted)}
+.rules{list-style:none; margin:10px 0 0; padding:0; display:grid; gap:6px}
+.rules li{display:grid; grid-template-columns:auto 1fr; gap:4px 10px; align-items:center; padding:8px 10px; background:var(--surface-2); border-radius:8px; font:500 13.5px var(--font-mono)}
+.rules li .meta{grid-column:2; color:var(--muted); font-size:12px}
+.rules .sw{width:12px; height:12px; border-radius:3px; grid-row:1}
+.rules .name{font-family:var(--font-body); font-weight:700; margin-left:6px}
+
+/* 결과 */
+.rule-chips{display:flex; flex-wrap:wrap; gap:6px; margin:0 0 10px}
+.rule-chips .pill{font-size:12.5px}
+.score{display:flex; align-items:center; gap:10px; margin:0 0 10px; padding:10px 12px; border-radius:10px; background:var(--surface-2); font-weight:600; font-size:15px}
+.score.ok{background:var(--ok-bg); color:var(--ok)}
+.tablewrap{overflow-x:auto; margin-inline:-4px}
+table{width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums}
+th{text-align:left; font-size:12px; color:var(--muted); font-weight:600; padding:4px 6px; white-space:nowrap}
+td{padding:8px 6px; border-top:1px solid var(--line); white-space:nowrap}
+tbody tr{cursor:pointer}
+tbody tr[aria-selected="true"]{background:var(--accent-soft)}
+.tag{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; font-weight:700; font-size:13px; color:#0C1620; margin-right:8px; vertical-align:middle}
+.nm{display:inline-block; vertical-align:middle; line-height:1.25}
+.nm small{display:block; color:var(--muted); font-size:12px; font-family:var(--font-mono)}
+td .pill{font-size:12px; padding:1px 8px}
+td .pill::before{display:none}
+.mk{font-weight:700; margin-left:4px}
+.mk.good{color:var(--ok)} .mk.bad{color:var(--bad)}
+
+/* 탐구 */
+details.q{border-top:1px solid var(--line)}
+details.q:first-of-type{border-top:0}
+details.q summary{cursor:pointer; font-weight:600; min-height:48px; display:flex; align-items:center; padding:6px 0; list-style-position:inside}
+details.q .ans{margin:0 0 12px; padding:10px 12px; border-radius:8px; background:var(--surface-2); color:var(--ink); font-size:14.5px}
+.real{margin:14px 0 0; padding:10px 12px; border-radius:8px; background:var(--accent-soft); font-size:14px}
+.empty{color:var(--muted); margin:0}
+
+.given{display:flex; flex-direction:column; gap:4px; margin-bottom:6px}
+.q{padding:12px 0; border-top:1px solid var(--line)}
+.q > label{display:block; font-weight:600; font-size:15px; margin-bottom:6px}
+.ans-row,.numrow{display:flex; gap:8px; align-items:center}
+.ans-row input,.numrow input{flex:1; min-width:0; min-height:48px; padding:0 12px; border-radius:10px; border:1.5px solid var(--line-strong); background:var(--surface); color:var(--ink); font:500 18px var(--font-mono); font-variant-numeric:tabular-nums}
+.numrow input{flex:none; width:110px}
+.ans-row input:disabled{background:var(--ok-bg); color:var(--ok); border-color:var(--ok)}
+.btn.sm{min-height:48px; padding:0 14px}
+.btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+.fb{margin:6px 0 0; font-size:14px; min-height:1.4em; color:var(--muted)}
+.fb.ok{color:var(--ok); font-weight:600}
+.fb.bad{color:var(--bad)}
+.lockmsg{font-size:13px; color:var(--muted); margin:0 0 6px}
+.picks{display:grid; grid-template-columns:repeat(2,1fr); gap:8px}
+.pick{min-height:48px; border-radius:10px; border:1.5px solid transparent; font-size:15px; font-weight:700; cursor:pointer}
+.pick:disabled{opacity:.4; cursor:default}
+.pick.on{outline:3px solid var(--accent); outline-offset:1px; opacity:1}
+.pick[data-cls="danger"]{background:var(--danger-bg); color:var(--danger)}
+.pick[data-cls="caution"]{background:var(--caution-bg); color:var(--caution)}
+.pick[data-cls="side"]{background:var(--side-bg); color:var(--side)}
+.pick[data-cls="rear"]{background:var(--rear-bg); color:var(--rear)}
+.thmsg{font-size:13px; color:var(--bad); min-height:1.3em; margin:0}
+.solbox{margin-top:12px; padding-top:12px; border-top:1px dashed var(--line-strong)}
+#showBtn{margin-top:4px}
+@media (prefers-reduced-motion: reduce){ *{scroll-behavior:auto !important} }
+</style>
+
+<div class="app">
+  <header class="top">
+    <h1>라이다 내적 판별기</h1>
+    <p class="lede">라이다가 잡은 장애물이 내 차의 정면에 있는지 옆에 있는지, 내적으로 가려내는 알고리즘을 직접 설계해 봅니다.</p>
+  </header>
+
+  <main class="layout">
+    <section class="stage-col" aria-label="라이다 센서 화면">
+      <div class="presets" id="presets" role="group" aria-label="상황 불러오기"></div>
+
+      <div class="stage">
+        <canvas id="cv" role="img" aria-label="위에서 본 자율주행 자동차와 장애물. 손가락으로 장애물을 끌어 옮길 수 있습니다."></canvas>
+        <div class="legend" aria-hidden="true">
+          <span><i style="background:#FF6155"></i>정면 위험</span>
+          <span><i style="background:#F6B73C"></i>전방 주의</span>
+          <span><i style="background:#3FC0B0"></i>측면</span>
+          <span><i style="background:#8E9DB3"></i>후방</span>
+        </div>
+      </div>
+      <p class="note" id="note" aria-live="polite"></p>
+
+      <div class="ctrl">
+        <div class="slider-row">
+          <label for="phi"><span>주행 방향 <b id="phiVal">90°</b></span><span class="mono" id="dTxt"></span></label>
+          <input type="range" id="phi" min="0" max="359" step="5" value="90">
+          <p class="hintline">0° 오른쪽, 90° 위, 180° 왼쪽, 270° 아래. 화면의 파란 손잡이를 돌려도 됩니다.</p>
+        </div>
+        <div class="btnrow">
+          <label class="toggle"><input type="checkbox" id="snap" checked>격자 맞춤</label>
+          <label class="toggle"><input type="checkbox" id="hide" checked>답 가리기</label>
+          <button class="btn" id="add" type="button">장애물 추가</button>
+          <button class="btn" id="del" type="button">선택한 장애물 삭제</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel-col" aria-label="계산과 설계">
+      <article class="card" id="calc">
+        <div class="card-head"><h2>직접 계산하기</h2><span class="sel-badge" id="selBadge"></span></div>
+        <p class="sub">화면에서 장애물을 눌러 고르고, 내적을 손으로 계산해 입력한 뒤 어느 구역인지 골라 보세요. 맞히면 화면에 답이 나타납니다.</p>
+        <div id="calcBody"></div>
+      </article>
+
+      <article class="card" id="algo">
+        <h2>판정 알고리즘 설계</h2>
+        <p class="sub">계산한 결과를 바탕으로 위험 기준값을 직접 입력해 보세요. 슬라이더로 미세 조정할 수도 있고, 화면의 색 구역이 함께 바뀝니다.</p>
+        <div class="seg" role="group" aria-label="판정에 쓰는 값">
+          <button type="button" id="mCos" aria-pressed="true">cosθ (방향만)</button>
+          <button type="button" id="mDot" aria-pressed="false">내적값 d·p 그대로</button>
+        </div>
+        <p class="sub" id="modeNote"></p>
+        <div class="th-row">
+          <label for="hiNum"><span>정면 위험 기준 (직접 입력)</span><span class="mono" id="hiTxt"></span></label>
+          <div class="numrow"><input id="hiNum" type="text" inputmode="decimal" autocomplete="off" aria-label="정면 위험 기준값"><span class="mono" id="hiUnit"></span></div>
+          <input type="range" id="hi" aria-label="정면 위험 기준 슬라이더">
+        </div>
+        <div class="th-row">
+          <label for="loNum"><span>측면 기준 (직접 입력)</span><span class="mono" id="loTxt"></span></label>
+          <div class="numrow"><input id="loNum" type="text" inputmode="decimal" autocomplete="off" aria-label="측면 기준값"><span class="mono" id="loUnit"></span></div>
+          <input type="range" id="lo" aria-label="측면 기준 슬라이더">
+        </div>
+        <p class="thmsg" id="thMsg" aria-live="polite"></p>
+        <ul class="rules" id="rules"></ul>
+      </article>
+
+      <article class="card" id="result">
+        <h2>판정 결과와 안전 규정</h2>
+        <p class="sub">안전 규정은 장애물과 주행 방향 사이의 각도 θ로 정해져 있습니다. 내 알고리즘이 이 규정과 같은 판정을 내도록 기준값을 맞춰 보세요.</p>
+        <div class="rule-chips">
+          <span class="pill c-danger">정면 위험 θ ≤ 30°</span>
+          <span class="pill c-caution">전방 주의 30° &lt; θ ≤ 60°</span>
+          <span class="pill c-side">측면 60° &lt; θ &lt; 120°</span>
+          <span class="pill c-rear">후방 θ ≥ 120°</span>
+        </div>
+        <div class="score" id="score"></div>
+        <p class="sub" id="solved"></p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>장애물</th><th>d·p</th><th>cosθ</th><th>θ</th><th>내 판정</th><th>규정</th></tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card" id="inquiry">
+        <h2>생각해 보기</h2>
+        <details class="q">
+          <summary>d·p = 0 이 되는 장애물은 화면에서 어디에 모여 있을까요?</summary>
+          <p class="ans">차의 위치(원점)를 지나고 주행 방향에 수직인 직선 위에 모입니다. 두 벡터가 수직이면 내적이 0이고 θ = 90°입니다. 화면의 점선 "d·p = 0"이 그 직선입니다.</p>
+        </details>
+        <details class="q">
+          <summary>"내적값 d·p 그대로" 모드에서 '거리 함정' 상황을 불러 보세요. 가까운 정면 장애물이 먼 비스듬한 장애물보다 덜 위험하다고 나오는 이유는?</summary>
+          <p class="ans">d가 단위벡터일 때 d·p = |p|cosθ 입니다. 방향이 같아도 거리 |p|가 크면 값이 커집니다. 방향만 비교하려면 |p|로 나눈 cosθ를 써야 합니다.</p>
+        </details>
+        <details class="q">
+          <summary>θ ≤ 30°, θ ≤ 60°를 cosθ 기준값으로 바꾸면 각각 얼마일까요?</summary>
+          <p class="ans">cos 30° = √3/2 ≈ 0.87, cos 60° = 0.5 입니다. θ가 작을수록 cosθ가 크므로 "θ ≤ 30°"는 "cosθ ≥ 0.87"이 됩니다.</p>
+        </details>
+        <details class="q">
+          <summary>내적의 부호는 정면과 후방을 구별하는 데 어떻게 쓰일까요?</summary>
+          <p class="ans">내적이 양수이면 θ &lt; 90°로 장애물이 차의 앞쪽에, 음수이면 θ &gt; 90°로 뒤쪽에 있습니다. 0이면 정확히 옆입니다.</p>
+        </details>
+        <p class="real">실제 라이다는 초당 수십만 개 이상의 점을 보내옵니다. 내적은 곱셈과 덧셈만으로 계산되어 이렇게 많은 점의 방향을 빠르게 가려내는 데 알맞습니다. 이 앱은 그 판단의 핵심만 단순하게 옮긴 모형입니다.</p>
+      </article>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  const DEG = Math.PI / 180, TAU = Math.PI * 2;
+  const FIELD = 10.5, LIM = 10;
+  const FONT = '"IBM Plex Sans KR", system-ui, sans-serif';
+  const MONO = '"IBM Plex Mono", ui-monospace, monospace';
+  const C = {
+    danger:  { name: '정면 위험', col: '#FF6155' },
+    caution: { name: '전방 주의', col: '#F6B73C' },
+    side:    { name: '측면',     col: '#3FC0B0' },
+    rear:    { name: '후방',     col: '#8E9DB3' }
+  };
+  const $ = s => document.querySelector(s);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const norm360 = a => ((a % 360) + 360) % 360;
+  const r2 = v => Math.round(v * 100) / 100;
+  const NAMES = { A: '승용차', B: '보행자', C: '자전거', D: '오토바이', E: '트럭', F: '버스' };
+
+  const state = {
+    phi: 90,
+    mode: 'cos',
+    th: { cos: { hi: 0.70, lo: 0.20 }, dot: { hi: 6, lo: 2 } },
+    snap: true,
+    obs: [],
+    sel: 'A',
+    preset: 0,
+    hide: true,
+    works: {},
+    done: {}
+  };
+
+  const PRESETS = [
+    { label: '기본 배치', phi: 90,
+      obs: [['A','승용차',0,6],['B','보행자',5,2],['C','자전거',-7,-1],['D','오토바이',-3,6]],
+      note: '차는 위쪽(90°)으로 달리고 있습니다. 장애물을 끌어 옮기며 d·p 값과 판정이 어떻게 바뀌는지 살펴보세요. 보행자 B는 어느 쪽으로 판정되었나요?' },
+    { label: '옆을 지나는 물체', phi: 90,
+      obs: [['A','자전거',-6,0],['B','보행자',6,1],['C','오토바이',5,-1],['D','승용차',2,8]],
+      note: 'A는 d·p = 0 입니다. B와 C의 d·p도 0에 가까운 이유를 θ로 설명해 보세요.' },
+    { label: '좌회전 중', phi: 135,
+      obs: [['A','승용차',-5,5],['B','자전거',0,6],['C','트럭',4,-2],['D','보행자',5,5]],
+      note: '차가 왼쪽 위(135°)로 방향을 바꾸는 중입니다. 장애물은 가만히 있어도 판정이 달라집니다. D의 d·p는 얼마인가요?' },
+    { label: '후진 주차', phi: 270,
+      obs: [['A','기둥',0,-4],['B','보행자',3,-1],['C','승용차',-2,5],['D','자전거',-4,-4]],
+      note: '주행 방향이 아래쪽(270°)입니다. 차의 앞은 화면 아래이고, 위쪽 장애물은 후방입니다.' },
+    { label: '거리 함정', phi: 90, mode: 'dot', th: { hi: 6, lo: 2 },
+      obs: [['A','승용차',0,3],['B','트럭',7,7],['C','보행자',-6,0]],
+      note: '내적값 모드입니다. 바로 앞 3 m의 승용차 A와 비스듬히 먼 트럭 B 중 어느 쪽이 더 위험하다고 판정되었나요? cosθ 모드로 바꿔 비교해 보세요.' }
+  ];
+
+  /* ---------- 계산 ---------- */
+  function dvec() {
+    let x = Math.cos(state.phi * DEG), y = Math.sin(state.phi * DEG);
+    if (Math.abs(x) < 1e-9) x = 0;
+    if (Math.abs(y) < 1e-9) y = 0;
+    return [x, y];
+  }
+  function classify(m, hi, lo) {
+    if (m >= hi) return 'danger';
+    if (m >= lo) return 'caution';
+    if (m > -lo) return 'side';
+    return 'rear';
+  }
+  function truthOf(theta) {
+    if (theta <= 30) return 'danger';
+    if (theta <= 60) return 'caution';
+    if (theta < 120) return 'side';
+    return 'rear';
+  }
+  function calc(o) {
+    const [dx, dy] = dvec();
+    const r = Math.hypot(o.x, o.y);
+    const dot = dx * o.x + dy * o.y;
+    const cos = r > 0 ? clamp(dot / r, -1, 1) : 1;
+    const theta = Math.acos(cos) / DEG;
+    const lat = -dy * o.x + dx * o.y;
+    const th = state.th[state.mode];
+    const m = state.mode === 'cos' ? cos : dot;
+    const cls = classify(m, th.hi, th.lo);
+    const truth = truthOf(theta);
+    return { r, dot, cos, theta, lat, m, cls, truth, ok: cls === truth };
+  }
+  const sel = () => state.obs.find(o => o.id === state.sel) || null;
+
+  const fmt = (n, k = 2) => {
+    const v = Math.abs(n) < 0.5 * Math.pow(10, -k) ? 0 : n;
+    return v.toFixed(k).replace('-', '−');
+  };
+  const fmtP = n => (Number.isInteger(n) ? String(n) : n.toFixed(1)).replace('-', '−');
+  const par = n => (n < 0 ? '(' + fmtP(n) + ')' : fmtP(n));
+
+  /* ---------- 캔버스 ---------- */
+  const cv = $('#cv'), ctx = cv.getContext('2d');
+  let W = 0, dpr = 1, sc = 1;
+  const X = x => W / 2 + x * sc;
+  const Y = y => W / 2 - y * sc;
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    W = r.width;
+    dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    sc = W / (2 * FIELD);
+  }
+  new ResizeObserver(resize).observe(cv);
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let sweep = 0.9, last = 0;
+  const SPEED = 55; // 도/초
+
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function tag(text, x, y, o = {}) {
+    const size = o.size || 12;
+    ctx.font = `${o.weight || 600} ${size}px ${o.font || FONT}`;
+    const w = ctx.measureText(text).width + 10, h = size + 8;
+    const lx = clamp(x - w / 2, 2, W - w - 2), ly = clamp(y - h / 2, 2, W - h - 2);
+    ctx.fillStyle = o.bg || 'rgba(12,22,32,.8)';
+    rr(lx, ly, w, h, 5); ctx.fill();
+    ctx.fillStyle = o.color || '#F2F6FA';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, lx + 5, ly + h / 2 + 0.5);
+  }
+  function arrow(x1, y1, x2, y2, color, width, head) {
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x1, y1);
+    ctx.lineTo(x2 - Math.cos(a) * head * 0.7, y2 - Math.sin(a) * head * 0.7); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - Math.cos(a - 0.45) * head, y2 - Math.sin(a - 0.45) * head);
+    ctx.lineTo(x2 - Math.cos(a + 0.45) * head, y2 - Math.sin(a + 0.45) * head);
+    ctx.closePath(); ctx.fill();
+  }
+
+  function drawZones() {
+    const th = state.th[state.mode];
+    const R = W;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, W); ctx.clip();
+    ctx.translate(W / 2, W / 2);
+    ctx.rotate((90 - state.phi) * DEG);
+    const wedge = (a, b, col, al) => {
+      ctx.fillStyle = col; ctx.globalAlpha = al;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R, a, b); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+    };
+    const rect = (x, y, w, h, col, al) => {
+      ctx.fillStyle = col; ctx.globalAlpha = al; ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
+    };
+    ctx.setLineDash([4, 6]); ctx.strokeStyle = 'rgba(255,255,255,.28)'; ctx.lineWidth = 1;
+    if (state.mode === 'cos') {
+      const t1 = Math.acos(clamp(th.hi, -1, 1)), t2 = Math.acos(clamp(th.lo, -1, 1));
+      const up = -Math.PI / 2;
+      wedge(up - t1, up + t1, C.danger.col, 0.24);
+      wedge(up + t1, up + t2, C.caution.col, 0.19);
+      wedge(up - t2, up - t1, C.caution.col, 0.19);
+      wedge(up + t2, up + Math.PI - t2, C.side.col, 0.16);
+      wedge(up - (Math.PI - t2), up - t2, C.side.col, 0.16);
+      wedge(Math.PI / 2 - t2, Math.PI / 2 + t2, C.rear.col, 0.17);
+      [t1, t2, Math.PI - t2].forEach(t => {
+        [-1, 1].forEach(s => {
+          const a = up + s * t;
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * R, Math.sin(a) * R); ctx.stroke();
+        });
+      });
+    } else {
+      const h = th.hi * sc, l = th.lo * sc;
+      rect(-R, -R, 2 * R, R - h, C.danger.col, 0.24);
+      rect(-R, -h, 2 * R, h - l, C.caution.col, 0.19);
+      rect(-R, -l, 2 * R, 2 * l, C.side.col, 0.16);
+      rect(-R, l, 2 * R, R, C.rear.col, 0.17);
+      [-h, -l, l].forEach(y => { ctx.beginPath(); ctx.moveTo(-R, y); ctx.lineTo(R, y); ctx.stroke(); });
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function drawGrid() {
+    ctx.lineWidth = 1;
+    for (let i = -10; i <= 10; i++) {
+      ctx.strokeStyle = i % 5 === 0 ? 'rgba(255,255,255,.12)' : 'rgba(255,255,255,.045)';
+      ctx.beginPath(); ctx.moveTo(X(i), 0); ctx.lineTo(X(i), W); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, Y(i)); ctx.lineTo(W, Y(i)); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,.2)';
+    [5, 10].forEach(m => {
+      ctx.beginPath(); ctx.arc(W / 2, W / 2, m * sc, 0, TAU); ctx.stroke();
+      ctx.fillStyle = 'rgba(220,230,240,.55)';
+      ctx.font = `500 11px ${MONO}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(m + ' m', X(m * Math.cos(-0.72)) + 3, Y(m * Math.sin(-0.72)));
+    });
+  }
+
+  function drawSweep(dt, ts) {
+    if (reduceMotion) return;
+    const adv = dt * SPEED * DEG;
+    sweep = (sweep + adv) % TAU;
+    const R = 14.5 * sc, cx = W / 2, cy = W / 2;
+    const steps = 30, slice = 2.2 * DEG;
+    for (let i = 0; i < steps; i++) {
+      const a = sweep - i * slice;
+      ctx.fillStyle = `rgba(143,230,216,${0.17 * Math.pow(1 - i / steps, 1.6)})`;
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, R, -a, -a + slice * 1.05); ctx.closePath(); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(143,230,216,.55)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(-sweep) * R, cy + Math.sin(-sweep) * R); ctx.stroke();
+    state.obs.forEach(o => {
+      const b = ((Math.atan2(o.y, o.x) % TAU) + TAU) % TAU;
+      const diff = ((sweep - b) % TAU + TAU) % TAU;
+      if (diff <= adv + 1e-6) o.hit = ts;
+    });
+  }
+
+  function drawAxes() {
+    const [dx, dy] = dvec();
+    const cx = W / 2, cy = W / 2, L = 16 * sc;
+    ctx.setLineDash([7, 6]); ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(110,163,255,.45)';
+    ctx.beginPath(); ctx.moveTo(cx - dx * L, cy + dy * L); ctx.lineTo(cx + dx * L, cy - dy * L); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,.3)';
+    ctx.beginPath(); ctx.moveTo(cx - dy * L, cy - dx * L); ctx.lineTo(cx + dy * L, cy + dx * L); ctx.stroke();
+    ctx.setLineDash([]);
+    // 옆 방향 직선 이름표 (오른쪽 끝)
+    const rx = dy, ry = -dx;
+    tag('d·p = 0', X(rx * 8.3), Y(ry * 8.3), { size: 11, font: MONO, weight: 500, color: '#D5DEE8', bg: 'rgba(12,22,32,.7)' });
+  }
+
+  function drawSelected() {
+    const o = sel(); if (!o) return;
+    const c = calc(o), [dx, dy] = dvec();
+    const ox = W / 2, oy = W / 2, px = X(o.x), py = Y(o.y);
+    const fx = X(dx * c.dot), fy = Y(dy * c.dot);
+    ctx.save();
+    ctx.setLineDash([5, 5]); ctx.strokeStyle = '#B592FF'; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(fx, fy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.9; ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.strokeStyle = '#B592FF';
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(fx, fy); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    arrow(ox, oy, px, py, '#F2F6FA', 2.2, 9);
+
+    // 각도 호
+    const phiR = state.phi * DEG;
+    let diff = Math.atan2(o.y, o.x) - phiR;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    if (Math.abs(diff) > 0.02 && c.r > 0.3) {
+      const aR = Math.min(1.6 * sc, 0.7 * c.r * sc);
+      ctx.strokeStyle = '#FFE9A8'; ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.arc(ox, oy, aR, -phiR, -(phiR + diff), diff > 0); ctx.stroke();
+      const mid = phiR + diff / 2, lr = aR + 18;
+      if (isDone(o)) tag('θ ' + c.theta.toFixed(1) + '°', ox + Math.cos(-mid) * lr, oy + Math.sin(-mid) * lr, { size: 12, color: '#FFE9A8' });
+    }
+    // 내적 길이 이름표
+    const off = c.lat >= 0 ? -0.9 : 0.9;
+    const lx = dx * c.dot / 2 + (-dy) * off, ly = dy * c.dot / 2 + dx * off;
+    if (isDone(o)) tag('d·p = ' + fmt(c.dot, 1) + ' m', X(lx), Y(ly), { size: 12, font: MONO, weight: 500, color: '#DCCEFF' });
+  }
+
+  function drawObstacles(ts) {
+    state.obs.forEach(o => {
+      const c = calc(o), col = C[c.cls].col;
+      const px = X(o.x), py = Y(o.y);
+      const rO = Math.max(13, 0.5 * sc);
+      const age = (ts - (o.hit || -9999)) / 700;
+      if (age >= 0 && age < 1) {
+        ctx.strokeStyle = `rgba(143,230,216,${0.7 * (1 - age)})`; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(px, py, rO + 4 + age * 22, 0, TAU); ctx.stroke();
+      }
+      // 점군: 센서를 향한 쪽
+      const toCar = Math.atan2(-o.y, -o.x);
+      ctx.fillStyle = '#8FE6D8';
+      for (let k = -2; k <= 2; k++) {
+        const a = toCar + k * 0.38;
+        ctx.beginPath(); ctx.arc(px + Math.cos(a) * (rO + 6), py - Math.sin(a) * (rO + 6), 1.9, 0, TAU); ctx.fill();
+      }
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(px, py, rO, 0, TAU); ctx.fill();
+      if (o.id === state.sel) {
+        ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(px, py, rO + 3, 0, TAU); ctx.stroke();
+      }
+      ctx.fillStyle = '#0C1620'; ctx.font = `700 14px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(o.id, px, py + 0.5);
+      const v = state.mode === 'cos' ? 'cos ' + fmt(c.cos, 2) : 'd·p ' + fmt(c.dot, 1);
+      if (isDone(o)) tag(v, px, py - rO - 15, { size: 11, font: MONO, weight: 500, color: col });
+      ctx.fillStyle = 'rgba(235,242,248,.85)'; ctx.font = `500 11.5px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(o.name, px, py + rO + 5);
+    });
+  }
+
+  function drawCar() {
+    ctx.save();
+    ctx.translate(W / 2, W / 2);
+    ctx.rotate((90 - state.phi) * DEG);
+    const w = 0.9 * sc, h = 1.7 * sc;
+    ctx.fillStyle = '#E4ECF3'; rr(-w / 2, -h / 2, w, h, 6); ctx.fill();
+    ctx.fillStyle = '#58708A'; rr(-w * 0.36, -h * 0.34, w * 0.72, h * 0.2, 3); ctx.fill();
+    ctx.fillStyle = '#FFE9A8';
+    ctx.fillRect(-w * 0.4, -h / 2 + 1.5, w * 0.2, 3); ctx.fillRect(w * 0.2, -h / 2 + 1.5, w * 0.2, 3);
+    ctx.fillStyle = '#0C1620'; ctx.strokeStyle = '#3FC0B0'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, h * 0.06, Math.max(4, w * 0.17), 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawHeading() {
+    const [dx, dy] = dvec();
+    const ox = W / 2, oy = W / 2;
+    arrow(ox, oy, ox + dx * sc, oy - dy * sc, '#6EA3FF', 4, 11);
+    tag('d', ox + dx * (sc + 15), oy - dy * (sc + 15), { size: 14, color: '#9CC2FF', bg: 'rgba(12,22,32,.0)', weight: 700 });
+    const hx = ox + dx * 2.1 * sc, hy = oy - dy * 2.1 * sc;
+    ctx.fillStyle = 'rgba(110,163,255,.2)'; ctx.strokeStyle = '#6EA3FF'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hx, hy, 13, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(hx, hy, 5.5, 0.4 * Math.PI, 1.75 * Math.PI); ctx.stroke();
+  }
+
+  function frame(ts) {
+    const dt = Math.min(0.05, (ts - last) / 1000 || 0); last = ts;
+    if (W > 0) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, W);
+      ctx.fillStyle = '#0C1620'; ctx.fillRect(0, 0, W, W);
+      drawZones(); drawGrid(); drawSweep(dt, ts); drawAxes();
+      drawSelected(); drawObstacles(ts); drawCar(); drawHeading();
+    }
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- 입력(터치·마우스) ---------- */
+  let drag = null;
+  const evW = e => {
+    const r = cv.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    return { px, py, x: (px - W / 2) / sc, y: -(py - W / 2) / sc };
+  };
+  cv.addEventListener('pointerdown', e => {
+    const p = evW(e), [dx, dy] = dvec();
+    const hx = W / 2 + dx * 2.1 * sc, hy = W / 2 - dy * 2.1 * sc;
+    if (Math.hypot(p.px - hx, p.py - hy) <= 30) {
+      drag = { type: 'handle' };
+    } else {
+      for (let i = state.obs.length - 1; i >= 0; i--) {
+        const o = state.obs[i];
+        const rr_ = Math.max(28, 0.5 * sc + 12);
+        if (Math.hypot(p.px - X(o.x), p.py - Y(o.y)) <= rr_) {
+          state.sel = o.id;
+          drag = { type: 'obs', o, ox: o.x - p.x, oy: o.y - p.y };
+          break;
+        }
+      }
+    }
+    if (drag) { cv.setPointerCapture(e.pointerId); e.preventDefault(); touch(); }
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const p = evW(e);
+    if (drag.type === 'handle') {
+      let a = Math.atan2(p.y, p.x) / DEG;
+      a = state.snap ? Math.round(a / 5) * 5 : Math.round(a);
+      state.phi = norm360(a);
+    } else {
+      let nx = clamp(p.x + drag.ox, -LIM, LIM), ny = clamp(p.y + drag.oy, -LIM, LIM);
+      if (state.snap) { nx = Math.round(nx); ny = Math.round(ny); }
+      else { nx = Math.round(nx * 10) / 10; ny = Math.round(ny * 10) / 10; }
+      if (Math.hypot(nx, ny) >= 1) { drag.o.x = nx; drag.o.y = ny; }
+    }
+    touch();
+  });
+  const endDrag = () => { drag = null; };
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+
+  /* ---------- 화면 갱신 ---------- */
+  let dirty = false;
+  function touch() {
+    if (dirty) return;
+    dirty = true;
+    requestAnimationFrame(() => { dirty = false; refresh(); });
+  }
+  function refresh() { updateHeading(); updateCalc(); updateAlgo(); updateResults(); updateButtons(); }
+
+  function updateHeading() {
+    const [dx, dy] = dvec();
+    $('#phiVal').textContent = state.phi + '°';
+    $('#dTxt').textContent = 'd = (' + fmt(dx) + ', ' + fmt(dy) + ')';
+    if (+$('#phi').value !== state.phi) $('#phi').value = state.phi;
+  }
+
+  function reason(c) {
+    const th = state.th[state.mode];
+    const cosMode = state.mode === 'cos';
+    const nm = cosMode ? 'cosθ' : 'd·p';
+    const u = cosMode ? '' : ' m';
+    const k = cosMode ? 2 : 1;
+    const hi = fmt(th.hi, k) + u, lo = fmt(th.lo, k) + u;
+    const v = fmt(c.m, k) + u;
+    switch (c.cls) {
+      case 'danger':  return `${nm} = ${v} ≥ ${hi} (위험 기준)`;
+      case 'caution': return `${lo} ≤ ${nm} = ${v} < ${hi}`;
+      case 'side':    return `|${nm}| = ${fmt(Math.abs(c.m), k)}${u} < ${lo} (측면 기준)`;
+      default:        return `${nm} = ${v} ≤ −${lo}`;
+    }
+  }
+  const MEANING = {
+    danger: '차가 가는 길의 거의 정면에 있습니다.',
+    caution: '정면에서 조금 벗어난 앞쪽에 있습니다.',
+    side: '차의 옆쪽에 있어 직접 충돌 가능성이 낮습니다.',
+    rear: '차의 뒤쪽에 있습니다.'
+  };
+
+  function solHTML(o) {
+    const c = calc(o), [dx, dy] = dvec();
+    let sign;
+    if (c.dot > 0.05) sign = '내적이 양수입니다. 장애물은 차의 앞쪽에 있습니다.';
+    else if (c.dot < -0.05) sign = '내적이 음수입니다. 장애물은 차의 뒤쪽에 있습니다.';
+    else sign = '내적이 0입니다. p ⊥ d 이므로 정확히 옆에 있습니다.';
+    return `
+      <ol class="steps">
+        <li>
+          <h3>① 두 벡터 (라이다 위치가 원점)</h3>
+          <div class="eq"><span class="v">d</span> = (${fmt(dx)}, ${fmt(dy)}) &nbsp; |<span class="v">d</span>| = 1</div>
+          <div class="eq"><span class="v">p</span> = (${fmtP(o.x)}, ${fmtP(o.y)}) &nbsp; |<span class="v">p</span>| = ${fmt(c.r)} m</div>
+        </li>
+        <li>
+          <h3>② 내적</h3>
+          <div class="eq"><span class="v">d</span>·<span class="v">p</span> = (${fmt(dx)})${par(o.x)} + (${fmt(dy)})${par(o.y)} = <span class="hl">${fmt(c.dot)} m</span></div>
+          <p class="expl">${sign} d가 길이 1인 단위벡터라서 내적은 p의 "앞쪽 성분" 길이와 같습니다.</p>
+        </li>
+        <li>
+          <h3>③ 각도</h3>
+          <div class="eq">cosθ = ${fmt(c.dot)} / (1 × ${fmt(c.r)}) = <span class="hl">${fmt(c.cos, 3)}</span></div>
+          <div class="eq">θ = cos⁻¹(${fmt(c.cos, 3)}) = <span class="hl">${c.theta.toFixed(1)}°</span></div>
+        </li>
+        <li class="verdict">
+          <h3>④ 내 알고리즘의 판정</h3>
+          <span class="pill big c-${c.cls}">${C[c.cls].name}</span>
+          <div class="eq">${reason(c)}</div>
+          <p class="expl">${MEANING[c.cls]} 안전 규정(θ = ${c.theta.toFixed(1)}°)으로는 "${C[c.truth].name}"이라서 ${c.ok ? '일치합니다.' : '다릅니다.'}</p>
+        </li>
+      </ol>`;
+  }
+
+  /* ---------- 직접 계산하기 ---------- */
+  const keyOf = o => `${o.id}|${o.x}|${o.y}|${state.phi}`;
+  const isDone = o => !state.hide || !!state.done[keyOf(o)];
+  function work(key) {
+    return state.works[key] || (state.works[key] = {
+      dotOk: false, cosOk: false, pickOk: false, shown: false, pick: null,
+      tries: { dot: 0, cos: 0, pick: 0 }, val: { dot: '', cos: '' },
+      fb: { dot: ['', ''], cos: ['', ''], pick: ['', ''] }
+    });
+  }
+  function parseNum(s) {
+    const t = String(s).replace('−', '-').replace(',', '.').trim();
+    if (t === '' || isNaN(+t)) return null;
+    return +t;
+  }
+  let calcKey = null;
+  function setFb(w, name, text, kind) {
+    w.fb[name] = [text, kind];
+    const el = $('#fb' + name[0].toUpperCase() + name.slice(1));
+    if (el) { el.textContent = text; el.className = 'fb ' + kind; }
+  }
+  function buildCalc(o, c, key) {
+    const [dx, dy] = dvec(), w = work(key);
+    const unlocked = w.dotOk && w.cosOk;
+    const picks = Object.keys(C).map(k =>
+      `<button type="button" class="pick${w.pick === k ? ' on' : ''}" data-act="pick" data-cls="${k}" ${unlocked && !w.pickOk ? '' : 'disabled'}>${C[k].name}</button>`).join('');
+    $('#calcBody').innerHTML = `
+      <div class="given">
+        <div class="eq"><span class="v">d</span> = (${fmt(dx)}, ${fmt(dy)}) &nbsp; |<span class="v">d</span>| = 1</div>
+        <div class="eq"><span class="v">p</span> = (${fmtP(o.x)}, ${fmtP(o.y)}) &nbsp; |<span class="v">p</span>| = ${fmt(c.r)} m (라이다가 잰 거리)</div>
+      </div>
+      <div class="q">
+        <label for="inDot">① 내적 <span class="v">d</span>·<span class="v">p</span> 를 계산해 입력 (m)</label>
+        <div class="ans-row">
+          <input id="inDot" type="text" inputmode="decimal" autocomplete="off" placeholder="예: 3.5" value="${w.val.dot}" ${w.dotOk ? 'disabled' : ''}>
+          <button type="button" class="btn sm" data-act="neg" data-for="inDot" aria-label="부호 바꾸기">±</button>
+          <button type="button" class="btn sm primary" data-act="chk-dot">확인</button>
+        </div>
+        <p class="fb ${w.fb.dot[1]}" id="fbDot">${w.fb.dot[0]}</p>
+      </div>
+      <div class="q">
+        <label for="inCos">② cosθ 를 계산해 입력</label>
+        <div class="ans-row">
+          <input id="inCos" type="text" inputmode="decimal" autocomplete="off" placeholder="예: 0.37" value="${w.val.cos}" ${w.cosOk ? 'disabled' : ''}>
+          <button type="button" class="btn sm" data-act="neg" data-for="inCos" aria-label="부호 바꾸기">±</button>
+          <button type="button" class="btn sm primary" data-act="chk-cos">확인</button>
+        </div>
+        <p class="fb ${w.fb.cos[1]}" id="fbCos">${w.fb.cos[0]}</p>
+      </div>
+      <div class="q">
+        <label>③ 이 장애물은 어느 구역에 있을까요?</label>
+        <p class="lockmsg" id="lockMsg" ${unlocked ? 'hidden' : ''}>①과 ②를 먼저 맞히면 고를 수 있어요. 구역 기준은 아래 "판정 결과와 안전 규정"의 각도를 보세요.</p>
+        <div class="picks">${picks}</div>
+        <p class="fb ${w.fb.pick[1]}" id="fbPick">${w.fb.pick[0]}</p>
+      </div>
+      <button type="button" class="btn" data-act="show" id="showBtn">풀이 보기</button>
+      <div id="sol" class="solbox" hidden></div>`;
+  }
+  function updateCalc() {
+    const o = sel();
+    if (!o) {
+      calcKey = null; $('#selBadge').textContent = '';
+      $('#calcBody').innerHTML = '<p class="empty">화면에서 장애물을 눌러 선택하거나 "장애물 추가"를 눌러 주세요.</p>';
+      return;
+    }
+    $('#selBadge').textContent = o.id + ' ' + o.name;
+    const key = keyOf(o);
+    if (key !== calcKey) { calcKey = key; buildCalc(o, calc(o), key); }
+    const w = work(key), sol = $('#sol'), sb = $('#showBtn');
+    if (sol) { sol.hidden = !w.shown; sol.innerHTML = w.shown ? solHTML(o) : ''; }
+    if (sb) sb.hidden = w.shown;
+  }
+  function checkNum(w, name, raw, ans, tol, c) {
+    w.val[name] = raw;
+    const v = parseNum(raw);
+    if (v === null) { setFb(w, name, '숫자를 입력해 주세요.', 'bad'); return; }
+    if (Math.abs(v - ans) <= tol) {
+      w[name + 'Ok'] = true;
+      setFb(w, name, name === 'dot' ? `맞아요. d·p = ${fmt(ans)} m` : `맞아요. cosθ = ${fmt(ans, 3)}`, 'ok');
+      const inp = $(name === 'dot' ? '#inDot' : '#inCos'); if (inp) inp.disabled = true;
+      if (w.dotOk && w.cosOk) {
+        document.querySelectorAll('.pick').forEach(b => { b.disabled = false; });
+        const l = $('#lockMsg'); if (l) l.hidden = true;
+      }
+    } else {
+      w.tries[name]++;
+      let hint;
+      if (name === 'dot') hint = (Math.abs(v + ans) <= tol && Math.abs(ans) > tol) ? '부호를 확인해 보세요. 장애물이 차 뒤쪽이면 내적이 음수예요.' : 'x성분끼리, y성분끼리 곱한 뒤 더해 보세요.';
+      else if (Math.abs(v - c.dot) <= 0.1) hint = 'd·p 를 그대로 쓰지 말고 |p| 로 나눠 보세요.';
+      else hint = Math.abs(v) > 1 ? 'cosθ 는 −1과 1 사이의 값이에요.' : 'cosθ = d·p ÷ (|d||p|), |d| = 1 이에요.';
+      if (w.tries[name] >= 3) hint += ' 막히면 "풀이 보기"를 눌러 보세요.';
+      setFb(w, name, '아직 달라요. ' + hint, 'bad');
+    }
+  }
+  $('#calcBody').addEventListener('click', e => {
+    const b = e.target.closest('[data-act]'), o = sel();
+    if (!b || !o) return;
+    const key = keyOf(o), w = work(key), c = calc(o), act = b.dataset.act;
+    if (act === 'neg') {
+      const inp = $('#' + b.dataset.for);
+      if (!inp || inp.disabled) return;
+      const t = inp.value.trim().replace('−', '-');
+      inp.value = t.startsWith('-') ? t.slice(1) : '-' + t;
+      w.val[b.dataset.for === 'inDot' ? 'dot' : 'cos'] = inp.value;
+    } else if (act === 'chk-dot') {
+      if (!w.dotOk) checkNum(w, 'dot', $('#inDot').value, c.dot, 0.1, c);
+    } else if (act === 'chk-cos') {
+      if (!w.cosOk) checkNum(w, 'cos', $('#inCos').value, c.cos, 0.03, c);
+    } else if (act === 'pick') {
+      const cls = b.dataset.cls; w.pick = cls;
+      document.querySelectorAll('.pick').forEach(x => x.classList.toggle('on', x === b));
+      if (cls === c.truth) {
+        w.pickOk = true; state.done[key] = true;
+        document.querySelectorAll('.pick').forEach(x => { x.disabled = true; });
+        setFb(w, 'pick', `정답. θ = ${c.theta.toFixed(1)}° 이므로 '${C[c.truth].name}'입니다. 내 알고리즘은 '${C[c.cls].name}'으로 판정해서 ${c.ok ? '규정과 같습니다.' : '규정과 다릅니다. 기준값을 고쳐 보세요.'}`, 'ok');
+        touch();
+      } else {
+        w.tries.pick++;
+        setFb(w, 'pick', '다시 생각해 보세요. cosθ가 클수록 θ가 작아서 정면에 가깝습니다. 규정의 각도 범위를 확인해 보세요.', 'bad');
+      }
+    } else if (act === 'show') {
+      w.shown = true; state.done[key] = true; touch();
+    }
+  });
+  $('#calcBody').addEventListener('input', e => {
+    const o = sel(); if (!o) return;
+    const w = work(keyOf(o));
+    if (e.target.id === 'inDot') w.val.dot = e.target.value;
+    if (e.target.id === 'inCos') w.val.cos = e.target.value;
+  });
+  $('#calcBody').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const act = e.target.id === 'inDot' ? 'chk-dot' : e.target.id === 'inCos' ? 'chk-cos' : null;
+    if (act) { const b = document.querySelector(`[data-act="${act}"]`); if (b) b.click(); }
+  });
+  $('#hide').addEventListener('change', e => { state.hide = e.target.checked; touch(); });
+
+  function updateAlgo() {
+    const cosMode = state.mode === 'cos';
+    $('#mCos').setAttribute('aria-pressed', cosMode);
+    $('#mDot').setAttribute('aria-pressed', !cosMode);
+    $('#modeNote').textContent = cosMode
+      ? '거리와 상관없이 방향(각도)만 비교합니다. cosθ = d·p / (|d||p|)'
+      : '내적값을 그대로 씁니다. d·p = |p|cosθ 이므로 멀리 있을수록 값이 커집니다.';
+    const th = state.th[state.mode];
+    const hi = $('#hi'), lo = $('#lo');
+    if (+hi.value !== th.hi) hi.value = th.hi;
+    if (+lo.value !== th.lo) lo.value = th.lo;
+    const hn = $('#hiNum'), ln = $('#loNum');
+    if (document.activeElement !== hn) hn.value = fmt(th.hi, cosMode ? 2 : 1);
+    if (document.activeElement !== ln) ln.value = fmt(th.lo, cosMode ? 2 : 1);
+    $('#hiUnit').textContent = cosMode ? '(cosθ)' : 'm';
+    $('#loUnit').textContent = cosMode ? '(|cosθ|)' : 'm';
+    const k = cosMode ? 2 : 1, u = cosMode ? '' : ' m';
+    const ang = v => (Math.acos(clamp(v, -1, 1)) / DEG).toFixed(1) + '°';
+    $('#hiTxt').textContent = cosMode ? `${cosMode ? 'cosθ' : 'd·p'} ≥ ${fmt(th.hi, k)}  (θ ≤ ${ang(th.hi)})` : `d·p ≥ ${fmt(th.hi, k)} m`;
+    $('#loTxt').textContent = cosMode ? `|cosθ| < ${fmt(th.lo, k)}  (θ ${ang(th.lo)} ~ ${(180 - Math.acos(th.lo) / DEG).toFixed(1)}°)` : `|d·p| < ${fmt(th.lo, k)} m`;
+    const nm = cosMode ? 'cosθ' : 'd·p';
+    const rows = [
+      ['danger', `${nm} ≥ ${fmt(th.hi, k)}${u}`, cosMode ? `θ ≤ ${ang(th.hi)}` : '차 앞쪽 멀리까지 포함'],
+      ['caution', `${fmt(th.lo, k)}${u} ≤ ${nm} < ${fmt(th.hi, k)}${u}`, cosMode ? `${ang(th.hi)} < θ ≤ ${ang(th.lo)}` : ''],
+      ['side', `−${fmt(th.lo, k)}${u} < ${nm} < ${fmt(th.lo, k)}${u}`, cosMode ? `${ang(th.lo)} < θ < ${(180 - Math.acos(th.lo) / DEG).toFixed(1)}°` : '주행 방향에 수직인 띠'],
+      ['rear', `${nm} ≤ −${fmt(th.lo, k)}${u}`, cosMode ? `θ ≥ ${(180 - Math.acos(th.lo) / DEG).toFixed(1)}°` : '']
+    ];
+    $('#rules').innerHTML = rows.map(r =>
+      `<li><span class="sw" style="background:${C[r[0]].col}"></span><span>${r[1]}<span class="name">${C[r[0]].name}</span></span>${r[2] ? `<span class="meta">${r[2]}</span>` : ''}</li>`
+    ).join('');
+  }
+
+  function updateResults() {
+    const list = state.obs.map(o => ({ o, c: calc(o) }));
+    const n = list.length, okN = list.filter(x => x.c.ok).length;
+    const sc_ = $('#score');
+    if (n === 0) { sc_.className = 'score'; sc_.textContent = '장애물이 없습니다.'; }
+    else if (okN === n) {
+      sc_.className = 'score ok';
+      sc_.textContent = state.mode === 'cos'
+        ? `규정과 일치 ${okN}/${n}. 장애물을 옮기거나 주행 방향을 바꿔도 모두 맞는지 확인해 보세요.`
+        : `규정과 일치 ${okN}/${n}. 지금 배치에서만 맞을 수 있습니다. 장애물을 멀리 옮겨 보세요.`;
+    } else { sc_.className = 'score'; sc_.textContent = `규정과 일치 ${okN}/${n}. 기준값을 조절해 보세요.`; }
+    const solvedN = state.obs.filter(o => { const w = state.works[keyOf(o)]; return w && w.pickOk && !w.shown; }).length;
+    $('#solved').textContent = `직접 계산해서 푼 장애물 ${solvedN}/${n}`;
+    $('#tbody').innerHTML = list.map(({ o, c }) => {
+      const dn = isDone(o);
+      return `
+      <tr data-id="${o.id}" aria-selected="${o.id === state.sel}">
+        <td><span class="tag" style="background:${C[c.cls].col}">${o.id}</span><span class="nm">${o.name}<small>p=(${fmtP(o.x)}, ${fmtP(o.y)})</small></span></td>
+        <td>${dn ? fmt(c.dot) : '?'}</td><td>${dn ? fmt(c.cos) : '?'}</td><td>${dn ? c.theta.toFixed(1) + '°' : '?'}</td>
+        <td><span class="pill c-${c.cls}">${C[c.cls].name}</span><span class="mk ${c.ok ? 'good' : 'bad'}" aria-label="${c.ok ? '규정과 일치' : '규정과 다름'}">${c.ok ? '✓' : '✗'}</span></td>
+        <td>${dn ? `<span class="pill c-${c.truth}">${C[c.truth].name}</span>` : '?'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function updateButtons() {
+    $('#add').disabled = state.obs.length >= 6;
+    $('#del').disabled = !sel();
+  }
+
+  /* ---------- 동작 연결 ---------- */
+  $('#phi').addEventListener('input', e => { state.phi = norm360(+e.target.value); touch(); });
+  $('#snap').addEventListener('change', e => {
+    state.snap = e.target.checked;
+    $('#phi').step = state.snap ? 5 : 1;
+    if (state.snap) {
+      state.phi = norm360(Math.round(state.phi / 5) * 5);
+      state.obs.forEach(o => {
+        const nx = Math.round(o.x), ny = Math.round(o.y);
+        if (Math.hypot(nx, ny) >= 1) { o.x = nx; o.y = ny; }
+      });
+    }
+    touch();
+  });
+
+  function setMode(m) {
+    state.mode = m;
+    const cosMode = m === 'cos';
+    const hi = $('#hi'), lo = $('#lo');
+    if (cosMode) { hi.min = 0.3; hi.max = 0.99; hi.step = 0.01; lo.min = 0.05; lo.max = 0.7; lo.step = 0.01; }
+    else { hi.min = 1; hi.max = 12; hi.step = 0.5; lo.min = 0.5; lo.max = 6; lo.step = 0.5; }
+    hi.value = state.th[m].hi; lo.value = state.th[m].lo;
+    touch();
+  }
+  $('#mCos').addEventListener('click', () => setMode('cos'));
+  $('#mDot').addEventListener('click', () => setMode('dot'));
+
+  function setHi(v) {
+    const th = state.th[state.mode], hi = $('#hi'), lo = $('#lo'), st = +hi.step;
+    th.hi = r2(clamp(v, +hi.min, +hi.max));
+    if (th.hi <= th.lo) th.lo = r2(Math.max(+lo.min, th.hi - st));
+    if (th.hi <= th.lo) th.hi = r2(th.lo + st);
+    hi.value = th.hi; lo.value = th.lo; touch();
+  }
+  function setLo(v) {
+    const th = state.th[state.mode], hi = $('#hi'), lo = $('#lo'), st = +lo.step;
+    th.lo = r2(clamp(v, +lo.min, +lo.max));
+    if (th.lo >= th.hi) th.hi = r2(Math.min(+hi.max, th.lo + st));
+    if (th.lo >= th.hi) th.lo = r2(th.hi - st);
+    hi.value = th.hi; lo.value = th.lo; touch();
+  }
+  $('#hi').addEventListener('input', e => { $('#thMsg').textContent = ''; setHi(+e.target.value); });
+  $('#lo').addEventListener('input', e => { $('#thMsg').textContent = ''; setLo(+e.target.value); });
+  function bindNum(inputSel, rangeSel, setter, key) {
+    const el = $(inputSel), rg = $(rangeSel);
+    el.addEventListener('change', () => {
+      const v = parseNum(el.value), k = state.mode === 'cos' ? 2 : 1, msg = $('#thMsg');
+      if (v === null) { msg.textContent = '숫자를 입력해 주세요.'; el.value = fmt(state.th[state.mode][key], k); return; }
+      msg.textContent = (v < +rg.min || v > +rg.max) ? `${fmt(+rg.min, k)} ~ ${fmt(+rg.max, k)} 사이의 값을 넣어 주세요.` : '';
+      setter(v);
+      el.value = fmt(state.th[state.mode][key], k);
+    });
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); });
+  }
+  bindNum('#hiNum', '#hi', setHi, 'hi');
+  bindNum('#loNum', '#lo', setLo, 'lo');
+
+  $('#tbody').addEventListener('click', e => {
+    const tr = e.target.closest('tr[data-id]');
+    if (tr) { state.sel = tr.dataset.id; touch(); }
+  });
+
+  $('#add').addEventListener('click', () => {
+    if (state.obs.length >= 6) return;
+    const used = new Set(state.obs.map(o => o.id));
+    const id = 'ABCDEF'.split('').find(l => !used.has(l));
+    const spots = [[0,6],[5,3],[-6,2],[-3,-5],[6,-5],[-2,8],[7,7],[-8,-3]];
+    const spot = spots.find(s => state.obs.every(o => Math.hypot(o.x - s[0], o.y - s[1]) >= 2)) || [3, 4];
+    state.obs.push({ id, name: NAMES[id], x: spot[0], y: spot[1], hit: 0 });
+    state.sel = id; touch();
+  });
+  $('#del').addEventListener('click', () => {
+    if (!sel()) return;
+    state.obs = state.obs.filter(o => o.id !== state.sel);
+    state.sel = state.obs.length ? state.obs[0].id : null;
+    touch();
+  });
+
+  function applyPreset(i) {
+    const p = PRESETS[i];
+    state.preset = i;
+    state.works = {}; state.done = {}; calcKey = null;
+    state.phi = p.phi;
+    state.obs = p.obs.map(a => ({ id: a[0], name: a[1], x: a[2], y: a[3], hit: 0 }));
+    state.sel = state.obs[0].id;
+    if (p.th) state.th[p.mode] = { hi: p.th.hi, lo: p.th.lo };
+    setMode(p.mode || state.mode);
+    $('#note').textContent = p.note;
+    document.querySelectorAll('#presets .chip').forEach((b, k) => b.setAttribute('aria-pressed', k === i));
+    touch();
+  }
+  PRESETS.forEach((p, i) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip'; b.textContent = p.label;
+    b.setAttribute('aria-pressed', i === 0);
+    b.addEventListener('click', () => applyPreset(i));
+    $('#presets').appendChild(b);
+  });
+
+  resize();
+  applyPreset(0);
+  refresh();
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>
